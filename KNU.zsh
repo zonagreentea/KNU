@@ -1,5 +1,3 @@
-
-cat > knu.zsh <<'KNU'
 #!/bin/zsh
 # KNU — Kernel Names Unix
 # One file. Four public operations. No third-party dependencies.
@@ -241,5 +239,3 @@ if [[ ${ZSH_EVAL_CONTEXT:-} == toplevel ]]; then
         _knu_prompt
     fi
 fi
-KNU
-chmod +x knu.zsh
