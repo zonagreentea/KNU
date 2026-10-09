@@ -1,81 +1,71 @@
 # KNU
 
-## Kernel Names Unix
+**Kernel Names Unix**
 
-**KNU is a universal system recognition and communication architecture.**
+A small, single-file communication core written in Zsh.
 
-### 1. Purpose
+KNU brings connection management, message exchange, and command execution together behind a compact interface. It is designed to be readable, implementable, and iteratable: start with a small core, make its behavior predictable, and build from there.
 
-KNU enables independently operating computer systems to recognize one another and communicate through any mutually compatible, direct, consensual connection.
+## Philosophy
 
-KNU is designed to span hardware generations, operating systems, processor architectures, and communication transports.
+- **One file.** Keep the core together and easy to inspect.
+- **A small interface.** Connect, communicate, inspect, and disconnect.
+- **Minimal dependencies.** Use Zsh and its built-in facilities instead of introducing a large runtime.
+- **Explicit behavior.** Make commands and their results easy to understand.
+- **Iterative by design.** Extend the implementation without losing the simplicity of the core.
 
-### 2. Core principles
+## Requirements
 
-* **Universality:** No single operating system or hardware architecture is required.
-* **Recognition:** Connected systems can establish each other's identities.
-* **Consent:** Connection alone does not grant permission to access another system.
-* **Interoperability:** Systems communicate through a common protocol.
-* **Adaptability:** Different transports and hardware interfaces can implement KNU.
-* **Continuity:** Systems can exchange and synchronize shared state without requiring identical physical memory.
-* **Extensibility:** The protocol can evolve without unnecessarily breaking compatible implementations.
+- macOS or another compatible Unix-like environment
+- Zsh
+- Zsh's `zsh/net/tcp` module for TCP communication
 
-### 3. System identity
+KNU is implemented in Zsh and does not require a separate Python runtime.
 
-Every KNU-compatible endpoint must be able to identify itself and describe its supported protocol version.
+## Getting started
 
-A system's identity should remain stable across ordinary reconnections and, where supported, operating system upgrades.
+Clone the repository:
 
-Identity must be verifiable; a claimed name alone is not proof of identity.
+```sh
+git clone https://github.com/zonagreentea/KNU.git
+cd KNU
+```
 
-### 4. Connection lifecycle
+Make the entry point executable if necessary:
 
-A KNU connection follows these logical stages:
+```sh
+chmod +x KNU
+```
 
-1. Establish a compatible transport.
-2. Discover the remote endpoint.
-3. Exchange protocol versions and identities.
-4. Verify identities where authentication is supported.
-5. Request and obtain the necessary consent.
-6. Negotiate capabilities and permissions.
-7. Exchange authorized messages and data.
-8. Close the connection or revoke authorization when requested.
+Check the current connection state:
 
-### 5. Initial protocol messages
+```sh
+./KNU check
+```
 
-* `DISCOVER` — announce or discover KNU-compatible endpoints.
-* `IDENTIFY` — exchange endpoint identities.
-* `NEGOTIATE` — establish compatible protocol versions.
-* `CONSENT` — request, grant, or deny authorization.
-* `CAPABILITIES` — advertise supported features.
-* `MESSAGE` — exchange authorized information.
-* `DISCONNECT` — terminate a connection.
-* `REVOKE` — withdraw previously granted authorization.
+Display command help:
 
-These names define the initial logical message types, not a finalized wire format.
+```sh
+./KNU help
+```
 
-### 6. Memory and state
+Run an executable through KNU:
 
-KNU distinguishes local physical memory from information shared between systems.
+```sh
+./KNU execute /usr/bin/printf 'Hello from KNU\n'
+```
 
-KNU may coordinate shared state, synchronized data, and persistent information without assuming that different devices have a common physical address space.
+## Commands
 
-Access to shared information must respect the permissions granted by its owner.
+KNU exposes a compact set of operations for working with connections and processes.
 
-### 7. Hardware and operating systems
-
-KNU does not initially require its own kernel.
-
-It may operate through software and hardware interfaces provided by existing systems. Legacy computers may require adapters or intermediary bridges.
-
-A future KNU kernel would be a separate architectural development requiring its own memory management, scheduling, hardware support, security model, and boot process.
-
-### 8. Initial objective
-
-Demonstrate mutual recognition and consensual communication between two heterogeneous computer systems.
-
-The long-term compatibility goal is to connect systems spanning Apple's computing history, from the Apple I to modern Macs, including the MacBook Neo.
-
-### 9. Design rule
-
-**Different systems. One common language. Mutual recognition. Consensual communication.**
+| Command | Purpose |
+| --- | --- |
+| `connect` | Open a connection or listen for an incoming TCP connection |
+| `send` | Send a message through a connection |
+| `read` | Read a message from a connection |
+| `write` | Write the most recently received message to a file |
+| `check` | Inspect the current connection state |
+| `disconnect` | Close one connection or all connections |
+| `execute` | Execute a specified executable with arguments |
+| `
