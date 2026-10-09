@@ -1,0 +1,405 @@
+#!/bin/zsh
+# KNU — Kernel Names Unix
+# Seven public operations. Zsh built-ins and zsh/net/tcp only.
+#
+# connect HOST PORT
+# connect --listen PORT
+# send TEXT
+# send HOST PORT TEXT
+# read
+# read HOST PORT
+# write PATH
+# check
+# disconnect
+# disconnect HOST PORT
+# execute FILE [ARGS...]
+#
+# TCP is unencrypted. Messages are newline-framed text.
+# User-space communication core; not a bootable OS kernel.
+
+emulate -LR zsh
+
+zmodload zsh/net/tcp || {
+    print -u2 -r -- 'KNU: cannot load zsh/net/tcp'
+    exit 1
+}
+
+typeset -A KNU_FDS
+typeset -A KNU_PEERS
+typeset -A KNU_LAST_MESSAGES
+
+typeset -gi KNU_LISTEN_FD=-1
+typeset -g KNU_LAST_KEY=''
+typeset -g KNU_LAST_MESSAGE=''
+
+_knu_key() {
+    print -r -- "$1:$2"
+}
+
+_knu_count() {
+    print -r -- "${#KNU_FDS}"
+}
+
+_knu_resolve() {
+    emulate -L zsh
+
+    if (( $# == 2 )); then
+        REPLY="$1:$2"
+        [[ -n ${KNU_FDS[$REPLY]-} ]]
+        return
+    fi
+
+    if (( $# == 0 )); then
+        if (( ${#KNU_FDS} == 1 )); then
+            REPLY="${(k)KNU_FDS}"
+            return 0
+        fi
+
+        if (( ${#KNU_FDS} == 0 )); then
+            print -u2 -r -- 'KNU: no active connections'
+        else
+            print -u2 -r -- 'KNU: specify HOST PORT; multiple connections are active'
+        fi
+        return 1
+    fi
+
+    print -u2 -r -- 'Usage: specify HOST PORT'
+    return 2
+}
+
+connect() {
+    emulate -L zsh
+
+    if (( $# == 2 )) && [[ $1 == --listen ]]; then
+        local port=$2
+
+        if [[ $port != <-> ]] || (( port < 1 || port > 65535 )); then
+            print -u2 -r -- 'KNU: invalid port'
+            return 2
+        fi
+
+        ztcp -l "$port" || {
+            print -u2 -r -- 'KNU: listen failed'
+            return 1
+        }
+
+        KNU_LISTEN_FD=$REPLY
+        print -u2 -r -- "KNU: listening on port $port"
+
+        ztcp -a "$KNU_LISTEN_FD" || {
+            ztcp -c "$KNU_LISTEN_FD" 2>/dev/null
+            KNU_LISTEN_FD=-1
+            print -u2 -r -- 'KNU: accept failed'
+            return 1
+        }
+
+        local fd=$REPLY
+        ztcp -c "$KNU_LISTEN_FD" 2>/dev/null
+        KNU_LISTEN_FD=-1
+
+        local peer="accepted:$port"
+        if [[ -n ${KNU_FDS[$peer]-} ]]; then
+            peer="accepted:$port#$fd"
+        fi
+
+        KNU_FDS[$peer]=$fd
+        KNU_PEERS[$peer]=$peer
+        print -r -- "KNU: connected $peer"
+        return 0
+    fi
+
+    if (( $# != 2 )); then
+        print -u2 -r -- 'Usage: connect HOST PORT | connect --listen PORT'
+        return 2
+    fi
+
+    local host=$1 port=$2
+    if [[ -z $host || $port != <-> ]] ||
+       (( port < 1 || port > 65535 )); then
+        print -u2 -r -- 'KNU: invalid host or port'
+        return 2
+    fi
+
+    local key="$host:$port"
+    if [[ -n ${KNU_FDS[$key]-} ]]; then
+        print -u2 -r -- "KNU: already connected to $key"
+        return 1
+    fi
+
+    ztcp "$host" "$port" || {
+        print -u2 -r -- "KNU: connection to $key failed"
+        return 1
+    }
+
+    KNU_FDS[$key]=$REPLY
+    KNU_PEERS[$key]=$key
+    print -r -- "KNU: connected $key"
+}
+
+send() {
+    emulate -L zsh
+
+    local key payload fd
+
+    if (( $# >= 3 )) && [[ $2 == <-> ]]; then
+        key="$1:$2"
+        payload="${(@)argv[3,-1]}"
+        if [[ -z ${KNU_FDS[$key]-} ]]; then
+            print -u2 -r -- "KNU: not connected to $key"
+            return 1
+        fi
+        fd=${KNU_FDS[$key]}
+    else
+        if (( $# == 0 )); then
+            print -u2 -r -- 'Usage: send TEXT | send HOST PORT TEXT'
+            return 2
+        fi
+        if ! _knu_resolve; then
+            return 1
+        fi
+        key=$REPLY
+        fd=${KNU_FDS[$key]}
+        payload="$*"
+    fi
+
+    if [[ $payload == *$'\n'* || $payload == *$'\r'* ]]; then
+        print -u2 -r -- 'KNU: messages must fit on one line'
+        return 2
+    fi
+
+    print -r -u "$fd" -- "$payload" || {
+        print -u2 -r -- "KNU: send failed for $key"
+        return 1
+    }
+}
+
+read() {
+    emulate -L zsh
+
+    local key fd message
+
+    if (( $# == 2 )); then
+        key="$1:$2"
+        if [[ -z ${KNU_FDS[$key]-} ]]; then
+            print -u2 -r -- "KNU: not connected to $key"
+            return 1
+        fi
+    elif (( $# == 0 )); then
+        if ! _knu_resolve; then
+            return 1
+        fi
+        key=$REPLY
+    else
+        print -u2 -r -- 'Usage: read | read HOST PORT'
+        return 2
+    fi
+
+    fd=${KNU_FDS[$key]}
+    if builtin read -r -u "$fd" message; then
+        KNU_LAST_KEY=$key
+        KNU_LAST_MESSAGE=$message
+        KNU_LAST_MESSAGES[$key]=$message
+        print -r -- "$message"
+        return 0
+    fi
+
+    print -u2 -r -- "KNU: peer closed the stream or read failed ($key)"
+    return 1
+}
+
+write() {
+    emulate -L zsh
+
+    if (( $# != 1 )); then
+        print -u2 -r -- 'Usage: write PATH'
+        return 2
+    fi
+
+    if [[ -z $KNU_LAST_KEY || -z ${KNU_LAST_MESSAGES[$KNU_LAST_KEY]+present} ]]; then
+        print -u2 -r -- 'KNU: no received message to write'
+        return 1
+    fi
+
+    local path=$1
+    if [[ -z $path || -d $path ]]; then
+        print -u2 -r -- 'KNU: invalid output path'
+        return 2
+    fi
+
+    print -r -- "${KNU_LAST_MESSAGES[$KNU_LAST_KEY]}" >| "$path" || {
+        print -u2 -r -- "KNU: could not write $path"
+        return 1
+    }
+
+    print -r -- "KNU: wrote message from $KNU_LAST_KEY to $path"
+}
+
+check() {
+    emulate -L zsh
+
+    if (( ${#KNU_FDS} == 0 )); then
+        print -r -- 'DISCONNECTED'
+    else
+        local key
+        for key in ${(ok)KNU_FDS}; do
+            print -r -- "CONNECTED $key"
+        done
+    fi
+
+    if [[ -n $KNU_LAST_KEY ]]; then
+        print -r -- "LAST_MESSAGE $KNU_LAST_KEY"
+    else
+        print -r -- 'LAST_MESSAGE empty'
+    fi
+}
+
+disconnect() {
+    emulate -L zsh
+
+    if (( $# == 2 )); then
+        local key="$1:$2"
+        if [[ -z ${KNU_FDS[$key]-} ]]; then
+            print -u2 -r -- "KNU: no connection to $key"
+            return 1
+        fi
+
+        ztcp -c "${KNU_FDS[$key]}" 2>/dev/null
+        unset "KNU_FDS[$key]" "KNU_PEERS[$key]"
+        print -r -- "KNU: disconnected $key"
+        return 0
+    fi
+
+    if (( $# != 0 )); then
+        print -u2 -r -- 'Usage: disconnect | disconnect HOST PORT'
+        return 2
+    fi
+
+    local key failed=0
+    for key in ${(k)KNU_FDS}; do
+        ztcp -c "${KNU_FDS[$key]}" 2>/dev/null || failed=1
+        unset "KNU_FDS[$key]" "KNU_PEERS[$key]"
+    done
+
+    if (( KNU_LISTEN_FD >= 0 )); then
+        ztcp -c "$KNU_LISTEN_FD" 2>/dev/null || failed=1
+        KNU_LISTEN_FD=-1
+    fi
+
+    print -r -- 'KNU: all connections disconnected'
+    return $failed
+}
+
+execute() {
+    emulate -L zsh
+
+    if (( $# == 1 )) && [[ $1 == --help || $1 == -h ]]; then
+        print -r -- "KNU execute — execute a file"
+        print -r -- "Usage: execute FILE [ARGS...] | execute --help"
+        print -r -- "FILE: path to an executable file."
+        print -r -- "ARGS...: optional arguments passed to FILE, in order."
+        print -r -- "Examples:"
+        print -r -- "  execute ./worker.zsh"
+        print -r -- "  execute ./worker.zsh start"
+        print -r -- "  execute ./worker.zsh connect 127.0.0.1 9001"
+        return 0
+    fi
+
+    if (( $# == 0 )); then
+        print -u2 -r -- "Usage: execute FILE [ARGS...]"
+        print -u2 -r -- "Run execute --help for details."
+        return 2
+    fi
+
+    local file=$1
+    shift
+
+    if [[ ! -f $file ]]; then
+        print -u2 -r -- "KNU: file not found: $file"
+        return 1
+    fi
+    if [[ ! -x $file ]]; then
+        print -u2 -r -- "KNU: file is not executable: $file"
+        return 1
+    fi
+
+    "$file" "$@"
+    return $?
+}
+
+_knu_help() {
+    print -r -- 'KNU — Kernel Names Unix'
+    print -r -- '  connect HOST PORT'
+    print -r -- '  connect --listen PORT'
+    print -r -- '  send TEXT | send HOST PORT TEXT'
+    print -r -- '  read | read HOST PORT'
+    print -r -- '  write PATH'
+    print -r -- '  check'
+    print -r -- '  disconnect | disconnect HOST PORT'
+    print -r -- '  execute FILE [ARGS...]'
+    print -r -- '  help'
+    print -r -- '  quit'
+}
+
+_knu_prompt() {
+    emulate -L zsh
+    local line op rest
+    local -a words
+
+    _knu_help
+
+    while true; do
+        print -n -r -- 'knu> '
+        if ! builtin read -r line; then
+            print
+            break
+        fi
+        [[ -z $line ]] && continue
+
+        op=${line%%[[:space:]]*}
+        if [[ $line == *[[:space:]]* ]]; then
+            rest=${line#*[[:space:]]}
+        else
+            rest=''
+        fi
+
+        case $op in
+            connect|execute|write|disconnect|read)
+                words=(${(z)rest})
+                "$op" "${words[@]}"
+                ;;
+            send)
+                words=(${(z)rest})
+                if (( ${#words} >= 3 )) && [[ ${words[2]} == <-> ]]; then
+                    send "${words[@]}"
+                else
+                    send "$rest"
+                fi
+                ;;
+            check) check ;;
+            help) _knu_help ;;
+            quit|exit) disconnect; break ;;
+            *) print -u2 -r -- 'KNU: unknown operation; type help' ;;
+        esac
+    done
+}
+
+if [[ ${ZSH_EVAL_CONTEXT:-} == toplevel ]]; then
+    if (( $# )); then
+        case $1 in
+            connect) shift; connect "$@" ;;
+            send) shift; send "$@" ;;
+            read) shift; read "$@" ;;
+            write) shift; write "$@" ;;
+            check) check ;;
+            disconnect) shift; disconnect "$@" ;;
+            execute) shift; execute "$@" ;;
+            help|-h|--help) _knu_help ;;
+            *)
+                print -u2 -r -- 'Usage: ./KNU [connect|send|read|write|check|disconnect|execute|help]'
+                exit 2
+                ;;
+        esac
+    else
+        _knu_prompt
+    fi
+fi
